@@ -2,11 +2,11 @@
 
 # SentinelWA
 
-**On-premise WhatsApp Business API gateway with a SOC-style operations console.**
+**Gateway WhatsApp Business API on-premise dengan konsol operasi bergaya SOC.**
 
-One internal endpoint for every office application that needs to send an OTP, a notification
-or an alert over WhatsApp — with live health telemetry, a streaming event log and an agent
-inbox on top of it.
+Satu endpoint internal untuk semua aplikasi kantor yang perlu mengirim OTP, notifikasi, atau
+alert lewat WhatsApp — lengkap dengan telemetri kesehatan sistem, log event streaming, dan
+inbox agent di atasnya.
 
 `Next.js 14` · `SQLite + Prisma` · `Server-Sent Events` · `OpenAPI 3.0` · `Tailwind` · `Recharts`
 
@@ -14,229 +14,233 @@ inbox on top of it.
 
 ---
 
-## Table of contents
+## Daftar isi
 
-1. [What this is](#1-what-this-is)
-2. [Architecture & flow](#2-architecture--flow)
-3. [Prerequisites](#3-prerequisites)
-4. [Installation](#4-installation)
-5. [On-premise deployment](#5-on-premise-deployment)
-6. [Meta webhook setup](#6-meta-webhook-setup)
-7. [Consuming the internal API](#7-consuming-the-internal-api)
-8. [The operations console](#8-the-operations-console)
-9. [Environment reference](#9-environment-reference)
-10. [Security model](#10-security-model)
-11. [Operations & troubleshooting](#11-operations--troubleshooting)
-12. [Project layout](#12-project-layout)
+1. [Apa ini sebenarnya](#1-apa-ini-sebenarnya)
+2. [Arsitektur & alur](#2-arsitektur--alur)
+3. [Prasyarat](#3-prasyarat)
+4. [Instalasi](#4-instalasi)
+5. [Deployment on-premise](#5-deployment-on-premise)
+6. [Setup webhook Meta](#6-setup-webhook-meta)
+7. [Cara memakai API internal](#7-cara-memakai-api-internal)
+8. [Konsol operasi](#8-konsol-operasi)
+9. [Referensi environment](#9-referensi-environment)
+10. [Model keamanan](#10-model-keamanan)
+11. [Operasional & troubleshooting](#11-operasional--troubleshooting)
+12. [Struktur proyek](#12-struktur-proyek)
 
 ---
 
-## 1. What this is
+## 1. Apa ini sebenarnya
 
-Most offices end up with three or four applications that each want to send a WhatsApp message —
-the HR portal wants login OTPs, the ticketing system wants status notifications, monitoring wants
-alerts. Giving each of them the Meta access token means four copies of a credential, four
-implementations of the template payload, and no single place to see what was sent.
+Kebanyakan kantor pada akhirnya punya tiga atau empat aplikasi yang sama-sama ingin mengirim pesan
+WhatsApp — portal HR butuh OTP login, sistem ticketing butuh notifikasi status, monitoring butuh
+alert. Memberikan access token Meta ke masing-masing aplikasi berarti empat salinan kredensial,
+empat implementasi payload template, dan tidak ada satu tempat pun untuk melihat apa yang sudah
+terkirim.
 
-SentinelWA is the single place. Internal applications call a small, stable HTTP API with their own
-scoped `x-api-key`; SentinelWA holds the Meta credentials, talks to the Graph API, receives the
-delivery receipts, and shows an operator what is happening.
+SentinelWA adalah satu tempat itu. Aplikasi internal memanggil HTTP API yang kecil dan stabil
+dengan `x-api-key` miliknya sendiri; SentinelWA yang memegang kredensial Meta, berbicara dengan
+Graph API, menerima delivery receipt, dan menampilkan apa yang sedang terjadi kepada operator.
 
-**What it does**
+**Yang dilakukan**
 
 | | |
 |---|---|
-| **Internal gateway** | `send-otp`, `send-message`, `status/{id}`, `health` — key-authenticated, scoped, rate-limited, IP-restricted |
-| **SOC dashboard** | Service health matrix, runtime gauges, throughput/latency/delivery charts, streaming log console |
-| **Webhook listener** | Signature-validated receiver for inbound messages, delivery receipts and template status changes |
-| **CS command center** | Three-pane agent inbox with 24h service-window tracking and quick-response macros |
-| **API explorer** | Swagger UI at `/docs`, generated from the same OpenAPI document the gateway serves |
+| **Gateway internal** | `send-otp`, `send-message`, `status/{id}`, `health` — autentikasi API key, ber-scope, ada rate limit, bisa dibatasi per IP |
+| **Dashboard SOC** | Matriks kesehatan layanan, gauge runtime, grafik throughput/latency/delivery, konsol log streaming |
+| **Webhook listener** | Penerima yang memvalidasi signature untuk pesan masuk, delivery receipt, dan perubahan status template |
+| **CS command center** | Inbox agent tiga panel dengan pelacakan service window 24 jam dan macro balasan cepat |
+| **API explorer** | Swagger UI di `/docs`, dihasilkan dari dokumen OpenAPI yang sama dengan yang disajikan gateway |
 
-**What it deliberately is not**: a multi-tenant SaaS. State that must be consistent — rate-limit
-buckets, the circuit breaker, the SSE fan-out — lives in process memory, which is what makes the
-whole thing run from one SQLite file with no Redis, no Postgres and no message broker. That is the
-right trade for a single on-premise node. See [Scaling](#scaling-beyond-one-node) before you reach
-for cluster mode.
+**Yang secara sengaja bukan tujuannya**: SaaS multi-tenant. State yang harus konsisten — bucket
+rate limit, circuit breaker, fan-out SSE — disimpan di memori proses, dan justru itulah yang membuat
+seluruh sistem bisa berjalan dari satu file SQLite tanpa Redis, tanpa Postgres, dan tanpa message
+broker. Itu trade-off yang tepat untuk satu node on-premise. Baca
+[Scaling](#scaling-lebih-dari-satu-node) sebelum Anda tergoda memakai cluster mode.
 
 ---
 
-## 2. Architecture & flow
+## 2. Arsitektur & alur
 
 ```mermaid
 flowchart LR
-    subgraph office["🏢 Office LAN"]
-        HR["HRIS / Payroll<br/><i>login OTP</i>"]
-        TIX["Helpdesk<br/><i>ticket updates</i>"]
-        MON["Monitoring<br/><i>incident alerts</i>"]
-        AGENT["CS Agent<br/><i>browser</i>"]
+    subgraph office["🏢 LAN Kantor"]
+        HR["HRIS / Payroll<br/><i>OTP login</i>"]
+        TIX["Helpdesk<br/><i>update tiket</i>"]
+        MON["Monitoring<br/><i>alert insiden</i>"]
+        AGENT["Agent CS<br/><i>browser</i>"]
     end
 
-    subgraph host["🖥️ On-premise host"]
+    subgraph host["🖥️ Server on-premise"]
         subgraph app["SentinelWA :3000"]
-            MW["Gateway middleware<br/>x-api-key · scopes<br/>IP allowlist · rate limit"]
-            API["/api/v1/*<br/>route handlers"]
-            HOOK["/api/webhook<br/>signature validation"]
-            SSE["/api/stream<br/>SSE fan-out"]
-            UI["Operator console<br/>/ · /chat · /api-keys · /settings · /docs"]
+            MW["Middleware gateway<br/>x-api-key · scope<br/>allowlist IP · rate limit"]
+            API["/api/v1/*<br/>route handler"]
+            HOOK["/api/webhook<br/>validasi signature"]
+            SSE["/api/stream<br/>fan-out SSE"]
+            UI["Konsol operator<br/>/ · /chat · /api-keys · /settings · /docs"]
         end
         DB[("SQLite<br/>prisma/sentinelwa.db")]
     end
 
     NGINX["Nginx + TLS<br/>:443"]
     META["Meta Graph API<br/>graph.facebook.com"]
-    WA(["WhatsApp user"])
+    WA(["Pengguna WhatsApp"])
 
     HR & TIX & MON -->|"POST + x-api-key"| MW
     AGENT -->|"HTTPS"| UI
     MW --> API
-    API -->|"messages"| META
-    META -->|"delivery receipts<br/>inbound messages"| NGINX
+    API -->|"pesan"| META
+    META -->|"delivery receipt<br/>pesan masuk"| NGINX
     NGINX -->|"POST /api/webhook"| HOOK
-    META <-->|"template send"| WA
+    META <-->|"kirim template"| WA
     API & HOOK --> DB
-    API & HOOK -->|"events"| SSE
-    SSE -->|"live frames"| UI
+    API & HOOK -->|"event"| SSE
+    SSE -->|"frame live"| UI
     UI --> DB
 ```
 
-### Request lifecycle — an OTP
+### Siklus hidup sebuah request — OTP
 
 ```
  ┌──────────────┐   1. POST /api/v1/send-otp
- │  HRIS portal │──────────────────────────────────┐
+ │ Portal HRIS  │──────────────────────────────────┐
  └──────────────┘   x-api-key: swa_live_…          │
                     { "to": "+62812…",             │
                       "code": "482913" }           ▼
                                         ┌────────────────────────┐
-                                        │  Gateway middleware    │
-                                        │  ① key hash lookup     │
-                                        │  ② revocation check    │
-                                        │  ③ IP allowlist        │
+                                        │  Middleware gateway    │
+                                        │  ① lookup hash key     │
+                                        │  ② cek pencabutan      │
+                                        │  ③ allowlist IP        │
                                         │  ④ scope: otp.send     │
                                         │  ⑤ token bucket        │
                                         └───────────┬────────────┘
-                                                    │ authorised
-                                   2. row inserted  ▼
+                                                    │ lolos
+                                   2. baris dicatat ▼
                                         ┌────────────────────────┐
                                         │ Message(status=queued) │──► SQLite
                                         └───────────┬────────────┘
-                                   3. template send │  (circuit breaker guarded)
+                                   3. kirim template│  (dijaga circuit breaker)
                                                     ▼
                                         ┌────────────────────────┐
                                         │  Meta Graph API        │
                                         │  POST /{phone-id}/…    │
                                         └───────────┬────────────┘
-                                   4. wamid returned│
+                                   4. wamid kembali │
                                                     ▼
                                         status=sent ──► SSE ──► dashboard
                                                     │
       ┌─────────────────────────────────────────────┘
-      │  5. minutes later, Meta calls back
+      │  5. beberapa menit kemudian, Meta memanggil balik
       ▼
- POST /api/webhook  (x-hub-signature-256 verified)
+ POST /api/webhook  (x-hub-signature-256 diverifikasi)
       │
       └─► status=delivered → read     ──► SSE ──► dashboard + /api/v1/status/{id}
 ```
 
-**Why the code is not stored.** `send-otp` records the *length* of the code and a reference string,
-never the code itself. A gateway database that holds live one-time passwords is a credential store,
-and it should not be one.
+**Kenapa kode OTP tidak disimpan.** `send-otp` mencatat *panjang* kode dan sebuah string referensi,
+bukan kodenya. Database gateway yang menyimpan one-time password aktif itu sama saja dengan
+credential store, dan seharusnya tidak menjadi seperti itu.
 
 ---
 
-## 3. Prerequisites
+## 3. Prasyarat
 
-| Requirement | Version | Notes |
+| Kebutuhan | Versi | Catatan |
 |---|---|---|
-| **Node.js** | ≥ 20.11 LTS (22 LTS recommended) | `node -v`. Node 18 will not run this build. |
-| **npm / pnpm** | npm ≥ 10, or pnpm ≥ 9 | Either works; commands below show both. |
-| **SQLite** | none to install | Prisma ships its own engine. The `sqlite3` CLI is only useful for manual inspection. |
-| **Meta developer account** | — | See below. |
-| **Public HTTPS endpoint** | — | Meta only delivers webhooks to a publicly reachable HTTPS URL with a valid certificate. Self-signed will not do. |
-| **Build toolchain** | optional | Only needed if a native module has to compile on an unusual platform. |
+| **Node.js** | ≥ 20.11 LTS (disarankan 22 LTS) | Cek `node -v`. Node 18 tidak bisa menjalankan build ini. |
+| **npm / pnpm** | npm ≥ 10, atau pnpm ≥ 9 | Keduanya bisa; perintah di bawah menampilkan dua-duanya. |
+| **SQLite** | tidak perlu diinstal | Prisma membawa engine sendiri. CLI `sqlite3` hanya berguna untuk inspeksi manual. |
+| **Akun Meta Developer** | — | Lihat di bawah. |
+| **Endpoint HTTPS publik** | — | Meta hanya mengirim webhook ke URL HTTPS yang bisa diakses publik dengan sertifikat valid. Self-signed tidak diterima. |
+| **Build toolchain** | opsional | Hanya perlu jika ada native module yang harus dikompilasi di platform tidak umum. |
 
-### On the Meta side you need
+### Yang perlu disiapkan di sisi Meta
 
-1. A **Meta Business account** with a verified business.
-2. A **Meta app** of type *Business* with the **WhatsApp** product added.
-3. A **WhatsApp Business Account (WABA)** and a registered **phone number** (its *Phone Number ID*).
-4. A **System User** with a **permanent access token** carrying `whatsapp_business_messaging` and
-   `whatsapp_business_management`. Do not use the 24-hour temporary token from the quickstart panel
-   for anything but a first smoke test.
-5. An approved **authentication template** for OTP delivery (typically named `otp_verification`).
-   Authentication templates are the only reliable way to reach a user outside the 24-hour service
-   window.
+1. **Akun Meta Business** dengan bisnis yang sudah terverifikasi.
+2. **Aplikasi Meta** bertipe *Business* dengan produk **WhatsApp** sudah ditambahkan.
+3. **WhatsApp Business Account (WABA)** dan **nomor telepon** yang sudah terdaftar (beserta
+   *Phone Number ID*-nya).
+4. **System User** dengan **permanent access token** yang memiliki izin
+   `whatsapp_business_messaging` dan `whatsapp_business_management`. Jangan pakai token sementara
+   24 jam dari panel quickstart untuk apa pun selain uji coba pertama.
+5. **Template autentikasi** yang sudah disetujui untuk pengiriman OTP (biasanya bernama
+   `otp_verification`). Template autentikasi adalah satu-satunya cara yang andal untuk menjangkau
+   pengguna di luar service window 24 jam.
 
-> **Air-gapped hosts.** The app itself makes no build-time network calls — fonts are a plain CSS
-> stack, not a Google Fonts fetch. `npm install` and `prisma generate` do need the internet once;
-> after that the host only needs egress to `graph.facebook.com` and ingress for the webhook.
+> **Server air-gapped.** Aplikasinya sendiri tidak melakukan panggilan jaringan saat build — font
+> memakai CSS stack biasa, bukan fetch ke Google Fonts. Yang butuh internet sekali adalah
+> `npm install` dan `prisma generate`; setelah itu server hanya perlu egress ke
+> `graph.facebook.com` dan ingress untuk webhook.
 
 ---
 
-## 4. Installation
+## 4. Instalasi
 
-### 4.1 Clone and install
+### 4.1 Clone dan install
 
 ```bash
-git clone <your-repo-url> SentinelWA
+git clone <url-repo-anda> SentinelWA
 cd SentinelWA
 
 npm install
-# or: pnpm install
+# atau: pnpm install
 ```
 
-`postinstall` runs `prisma generate`, which downloads the Prisma query engine on first install.
+`postinstall` menjalankan `prisma generate`, yang mengunduh Prisma query engine saat instalasi
+pertama.
 
-### 4.2 Configure the environment
+### 4.2 Konfigurasi environment
 
 ```bash
 cp .env.example .env
 ```
 
-Generate the two secrets the app refuses to start without in production:
+Buat dua secret yang wajib ada sebelum aplikasi mau berjalan di mode production:
 
 ```bash
 node -e "console.log('ENCRYPTION_KEY=' + require('crypto').randomBytes(32).toString('hex'))" >> .env
 node -e "console.log('SESSION_SECRET=' + require('crypto').randomBytes(32).toString('hex'))" >> .env
 ```
 
-Then edit `.env` and set, at minimum:
+Lalu buka `.env` dan isi minimal:
 
 ```dotenv
 APP_PUBLIC_URL=https://wa-gateway.corp.example.com
-CONSOLE_PASSWORD=<a long passphrase for the operator console>
+CONSOLE_PASSWORD=<passphrase panjang untuk konsol operator>
 ```
 
-Meta credentials can go in `.env` **or** be typed into `/settings` later — settings entered in the
-console are encrypted with AES-256-GCM and stored in SQLite, and they take precedence over `.env`.
+Kredensial Meta bisa ditaruh di `.env` **atau** diketik di `/settings` nanti — pengaturan yang
+dimasukkan lewat konsol dienkripsi dengan AES-256-GCM dan disimpan di SQLite, dan nilainya
+mengalahkan `.env`.
 
-> ⚠️ **`ENCRYPTION_KEY` is not rotatable in place.** Change it and every stored Meta credential
-> becomes undecryptable; you will have to re-enter them in `/settings`. Back it up with the same
-> care as the token it protects.
+> ⚠️ **`ENCRYPTION_KEY` tidak bisa dirotasi di tempat.** Kalau diganti, semua kredensial Meta yang
+> tersimpan menjadi tidak bisa didekripsi dan Anda harus memasukkannya ulang di `/settings`.
+> Backup key ini sama hati-hatinya dengan token yang dilindunginya.
 
-### 4.3 Initialise the database
+### 4.3 Inisialisasi database
 
 ```bash
-# Local development — creates the file and applies migrations
+# Development lokal — membuat file dan menerapkan migrasi
 npx prisma migrate dev
 
-# Production / repeatable deploys — applies committed migrations only
+# Production / deploy berulang — hanya menerapkan migrasi yang sudah di-commit
 npx prisma migrate deploy
 ```
 
-The database file lands at `prisma/sentinelwa.db` (per `DATABASE_URL`). It is in `.gitignore`;
-back it up as a file — see [Backups](#backups).
+File database akan berada di `prisma/sentinelwa.db` (sesuai `DATABASE_URL`). File ini masuk
+`.gitignore`; backup sebagai file — lihat [Backup](#backup).
 
-Inspect it any time with:
+Untuk melihat isinya kapan saja:
 
 ```bash
 npx prisma studio
 ```
 
-### 4.4 Issue the first API key
+### 4.4 Terbitkan API key pertama
 
-Without a key nothing can call the gateway. Either open `/api-keys` in the console, or from the
-shell:
+Tanpa key, tidak ada yang bisa memanggil gateway. Buka `/api-keys` di konsol, atau lewat terminal:
 
 ```bash
 npm run key:create -- --name "hris-payroll" --scopes otp.send,status.read --rate 240
@@ -253,13 +257,13 @@ npm run key:create -- --name "hris-payroll" --scopes otp.send,status.read --rate
   └─ store it now — only the SHA-256 digest is persisted ────────
 ```
 
-The plaintext is shown **once**. Only `SHA-256(key)` is written to the database, so a stolen
-database backup cannot be replayed against the gateway.
+Nilai plaintext hanya ditampilkan **sekali**. Yang ditulis ke database hanya `SHA-256(key)`,
+sehingga backup database yang dicuri tidak bisa dipakai ulang untuk memanggil gateway.
 
-### 4.5 Run it
+### 4.5 Jalankan
 
 ```bash
-# Development — hot reload on http://localhost:3000
+# Development — hot reload di http://localhost:3000
 npm run dev
 
 # Production
@@ -267,7 +271,7 @@ npm run build
 npm run start
 ```
 
-Useful extras:
+Perintah tambahan yang berguna:
 
 ```bash
 npm run typecheck      # tsc --noEmit
@@ -277,36 +281,36 @@ npm run db:studio      # Prisma Studio
 
 ---
 
-## 5. On-premise deployment
+## 5. Deployment on-premise
 
-The shape: **Nginx terminates TLS on :443 → Node listens on :3000, bound to localhost.**
-Node is never exposed directly.
+Bentuknya: **Nginx menangani TLS di :443 → Node mendengarkan di :3000, hanya di localhost.**
+Node tidak pernah diekspos langsung.
 
-### 5.1 Build and place the app
+### 5.1 Build dan tempatkan aplikasi
 
 ```bash
 sudo mkdir -p /opt/sentinelwa && sudo chown "$USER" /opt/sentinelwa
 cd /opt/sentinelwa
-git clone <your-repo-url> .
+git clone <url-repo-anda> .
 
 npm ci
-cp .env.example .env && $EDITOR .env      # fill in secrets
+cp .env.example .env && $EDITOR .env      # isi secret
 npx prisma migrate deploy
 npm run build
 mkdir -p logs
 ```
 
-### 5.2 Run under PM2
+### 5.2 Jalankan dengan PM2
 
 ```bash
 npm install -g pm2
 
 pm2 start ecosystem.config.js --env production
 pm2 save
-pm2 startup            # prints a command — run it with sudo to survive reboot
+pm2 startup            # menampilkan sebuah perintah — jalankan dengan sudo agar bertahan setelah reboot
 ```
 
-Day-to-day:
+Operasi sehari-hari:
 
 ```bash
 pm2 status
@@ -316,47 +320,47 @@ pm2 reload sentinelwa      # graceful
 pm2 monit
 ```
 
-`ecosystem.config.js` deliberately pins `instances: 1` / `exec_mode: 'fork'`.
+`ecosystem.config.js` sengaja mengunci `instances: 1` / `exec_mode: 'fork'`.
 
-<a name="scaling-beyond-one-node"></a>
-> **Do not switch to cluster mode without changes.** The rate-limit buckets, the Meta circuit
-> breaker and the SSE fan-out all live in process memory. With four workers, a key limited to
-> 120 req/min effectively gets 480, the breaker opens independently in each worker, and a dashboard
-> only sees events from the worker its stream happened to land on. Vertical scaling is the
-> supported path; horizontal scaling means moving those three things to Redis first.
+<a name="scaling-lebih-dari-satu-node"></a>
+> **Jangan pindah ke cluster mode tanpa perubahan.** Bucket rate limit, circuit breaker Meta, dan
+> fan-out SSE semuanya hidup di memori proses. Dengan empat worker, key yang dibatasi 120 req/menit
+> praktis mendapat 480, circuit breaker terbuka sendiri-sendiri di tiap worker, dan dashboard hanya
+> melihat event dari worker tempat stream-nya kebetulan mendarat. Jalur yang didukung adalah scaling
+> vertikal; scaling horizontal berarti memindahkan tiga hal itu ke Redis terlebih dahulu.
 
-### 5.3 Nginx reverse proxy
+### 5.3 Reverse proxy Nginx
 
-A complete, commented configuration ships at [`deploy/nginx.conf`](deploy/nginx.conf).
+Konfigurasi lengkap dengan komentar tersedia di [`deploy/nginx.conf`](deploy/nginx.conf).
 
 ```bash
 sudo cp deploy/nginx.conf /etc/nginx/sites-available/sentinelwa
-sudo $EDITOR /etc/nginx/sites-available/sentinelwa      # set server_name
+sudo $EDITOR /etc/nginx/sites-available/sentinelwa      # sesuaikan server_name
 sudo ln -s /etc/nginx/sites-available/sentinelwa /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Two settings in that file are not optional:
+Dua pengaturan di file itu tidak boleh dilewatkan:
 
 ```nginx
 location /api/stream {
     proxy_pass http://sentinelwa_app;
-    proxy_buffering off;        # without this, the live dashboard arrives in bursts
-    proxy_read_timeout 24h;     # without this, the stream is cut every 60s
+    proxy_buffering off;        # tanpa ini, dashboard live datang tersendat-sendat
+    proxy_read_timeout 24h;     # tanpa ini, stream terputus tiap 60 detik
     gzip off;
     chunked_transfer_encoding on;
 }
 ```
 
-The config also shows where to restrict access. A sensible split:
+Konfigurasi itu juga menunjukkan di mana akses sebaiknya dibatasi. Pembagian yang masuk akal:
 
-| Path | Who should reach it |
+| Path | Siapa yang boleh mengakses |
 |---|---|
-| `/api/webhook` | The public internet — Meta must reach it |
-| `/api/v1/*` | Office ranges only (`allow 10.0.0.0/8; deny all;`) |
-| `/` (console) | Management LAN only |
+| `/api/webhook` | Internet publik — Meta harus bisa menjangkaunya |
+| `/api/v1/*` | Hanya range IP kantor (`allow 10.0.0.0/8; deny all;`) |
+| `/` (konsol) | Hanya LAN manajemen |
 
-### 5.4 TLS with Let's Encrypt
+### 5.4 TLS dengan Let's Encrypt
 
 ```bash
 sudo apt install certbot python3-certbot-nginx
@@ -364,110 +368,110 @@ sudo mkdir -p /var/www/certbot
 
 sudo certbot --nginx -d wa-gateway.corp.example.com
 
-# renewal is installed as a systemd timer; verify it
+# perpanjangan otomatis dipasang sebagai systemd timer; verifikasi
 sudo certbot renew --dry-run
 systemctl list-timers | grep certbot
 ```
 
-If the host has no inbound :80 from the internet, use a DNS-01 challenge with your provider's
-certbot plugin instead.
+Kalau server tidak menerima koneksi masuk di port 80 dari internet, gunakan challenge DNS-01 dengan
+plugin certbot milik penyedia DNS Anda.
 
 ### 5.5 Firewall
 
 ```bash
 sudo ufw allow 80/tcp        # ACME + redirect
 sudo ufw allow 443/tcp       # HTTPS
-sudo ufw deny  3000/tcp      # Node stays behind Nginx
+sudo ufw deny  3000/tcp      # Node tetap di balik Nginx
 sudo ufw enable
 ```
 
-### 5.6 Verify the deployment
+### 5.6 Verifikasi deployment
 
 ```bash
-# 1. Node is up behind the proxy
+# 1. Node hidup di belakang proxy
 curl -s -o /dev/null -w '%{http_code}\n' https://wa-gateway.corp.example.com/login       # 200
 
-# 2. The gateway rejects an unauthenticated call
+# 2. Gateway menolak panggilan tanpa autentikasi
 curl -s https://wa-gateway.corp.example.com/api/v1/health | jq       # 401 UNAUTHORIZED
 
-# 3. …and accepts a real key
+# 3. …dan menerima key yang benar
 curl -s -H "x-api-key: $SENTINEL_KEY" \
      https://wa-gateway.corp.example.com/api/v1/health | jq '.status'
 
-# 4. SSE actually streams (you should see frames appear, not a hang then a dump)
+# 4. SSE benar-benar streaming (frame harus muncul bertahap, bukan menggantung lalu tumpah sekaligus)
 curl -N https://wa-gateway.corp.example.com/api/stream
 ```
 
 ---
 
-## 6. Meta webhook setup
+## 6. Setup webhook Meta
 
-### 6.1 Configure SentinelWA first
+### 6.1 Konfigurasi SentinelWA terlebih dahulu
 
-Open **`/settings`** and set:
+Buka **`/settings`** dan isi:
 
-| Field | Where it comes from |
+| Kolom | Sumbernya |
 |---|---|
 | System User Permanent Access Token | Business Settings → System Users → Generate token |
 | Phone Number ID | WhatsApp → API Setup |
 | Business Account ID (WABA) | WhatsApp → API Setup |
 | App Secret | App Dashboard → Settings → Basic |
-| Webhook Verify Token | **You invent it.** Any long random string. |
-| Public HTTPS origin | e.g. `https://wa-gateway.corp.example.com` |
+| Webhook Verify Token | **Anda yang menentukan.** String acak yang panjang. |
+| Public HTTPS origin | mis. `https://wa-gateway.corp.example.com` |
 
-Save, then press **Execute handshake**. It calls
-`GET /{version}/{phone-number-id}` and reports the display number, verified name and quality
-rating. A green result means the token, the phone number ID and the API version all agree.
+Simpan, lalu tekan **Execute handshake**. Tombol itu memanggil
+`GET /{version}/{phone-number-id}` dan melaporkan nomor tampilan, verified name, dan quality rating.
+Hasil hijau berarti token, phone number ID, dan versi API sudah cocok satu sama lain.
 
-The settings page shows the exact **callback URL** to paste into Meta:
+Halaman settings menampilkan **callback URL** persis yang harus di-paste ke Meta:
 
 ```
 https://wa-gateway.corp.example.com/api/webhook
 ```
 
-### 6.2 Configure Meta
+### 6.2 Konfigurasi di Meta
 
 1. **App Dashboard → WhatsApp → Configuration → Webhook → Edit**
-2. **Callback URL** — the URL above.
-3. **Verify token** — the exact string you saved in `/settings`.
-4. **Verify and save.** Meta immediately issues `GET /api/webhook?hub.mode=subscribe&…`;
-   SentinelWA echoes `hub.challenge` when the token matches. A `INFO webhook Verification handshake
-   accepted` line appears in the live log console at that moment.
-5. **Manage → subscribe** to at least:
-   - `messages` — inbound messages **and** all delivery receipts (`sent`, `delivered`, `read`, `failed`)
-   - `message_template_status_update` — approval and rejection notices for your templates
+2. **Callback URL** — URL di atas.
+3. **Verify token** — string yang persis sama dengan yang disimpan di `/settings`.
+4. **Verify and save.** Meta langsung mengirim `GET /api/webhook?hub.mode=subscribe&…`;
+   SentinelWA mengembalikan `hub.challenge` jika token cocok. Baris
+   `INFO webhook Verification handshake accepted` akan muncul di konsol log live saat itu juga.
+5. **Manage → subscribe** minimal ke:
+   - `messages` — pesan masuk **dan** semua delivery receipt (`sent`, `delivered`, `read`, `failed`)
+   - `message_template_status_update` — pemberitahuan persetujuan/penolakan template
 
-### 6.3 Confirm it works
+### 6.3 Konfirmasi bahwa semuanya bekerja
 
-Send a WhatsApp message *to* your business number from a phone. Within a second or two:
+Kirim pesan WhatsApp *ke* nomor bisnis Anda dari sebuah ponsel. Dalam satu-dua detik:
 
-- a `INFO webhook Inbound text from …` line appears in the log console,
-- the contact appears in **`/chat`** with an unread badge,
-- the **Webhook Listener** card on the dashboard flips to *operational* with a fresh timestamp.
+- baris `INFO webhook Inbound text from …` muncul di konsol log,
+- kontaknya muncul di **`/chat`** dengan penanda belum dibaca,
+- kartu **Webhook Listener** di dashboard berubah menjadi *operational* dengan timestamp baru.
 
-### 6.4 If verification fails
+### 6.4 Kalau verifikasi gagal
 
-| Symptom | Cause |
+| Gejala | Penyebab |
 |---|---|
-| Meta says "The callback URL or verify token couldn't be validated" | Token mismatch, or the URL is not reachable from the public internet. Check with `curl` **from outside your network**. |
-| Verification passes, no callbacks arrive | You verified but never subscribed to the `messages` field. |
-| `CRITICAL webhook Rejected payload with invalid x-hub-signature-256` | The **App Secret** in `/settings` is wrong, or is from a different app than the one whose webhook is firing. |
-| Certificate errors in Meta's tester | Incomplete chain. Use `fullchain.pem`, not `cert.pem`. |
+| Meta bilang "The callback URL or verify token couldn't be validated" | Token tidak cocok, atau URL tidak bisa dijangkau dari internet publik. Uji dengan `curl` **dari luar jaringan Anda**. |
+| Verifikasi lolos tapi tidak ada callback masuk | Sudah verify tapi belum subscribe ke field `messages`. |
+| `CRITICAL webhook Rejected payload with invalid x-hub-signature-256` | **App Secret** di `/settings` salah, atau berasal dari aplikasi yang berbeda dengan yang mengirim webhook. |
+| Error sertifikat di tester Meta | Rantai sertifikat tidak lengkap. Gunakan `fullchain.pem`, bukan `cert.pem`. |
 
 ---
 
-## 7. Consuming the internal API
+## 7. Cara memakai API internal
 
-Every call carries `x-api-key`. Every response carries `X-Request-Id`, and rate-limited
-responses carry `X-RateLimit-Limit` / `-Remaining` / `-Reset`.
+Setiap panggilan membawa `x-api-key`. Setiap response membawa `X-Request-Id`, dan response yang
+kena rate limit membawa `X-RateLimit-Limit` / `-Remaining` / `-Reset`.
 
-Interactive documentation with a working **Try it out** lives at **`/docs`**; the raw document is at
-`/api/openapi`.
+Dokumentasi interaktif dengan **Try it out** yang berfungsi ada di **`/docs`**; dokumen mentahnya
+di `/api/openapi`.
 
 ### 7.1 `POST /api/v1/send-otp`
 
-Sends a one-time code through a Meta authentication template — deliverable outside the 24-hour
-service window. Scope: `otp.send`.
+Mengirim kode sekali pakai lewat template autentikasi Meta — bisa dikirim di luar service window
+24 jam. Scope: `otp.send`.
 
 <details open>
 <summary><b>curl</b></summary>
@@ -503,9 +507,9 @@ curl -sS -X POST https://wa-gateway.corp.example.com/api/v1/send-otp \
 <summary><b>JavaScript — fetch</b></summary>
 
 ```js
-// otp.js — Node 20+ or any modern browser runtime
+// otp.js — Node 20+ atau runtime browser modern
 const GATEWAY = process.env.SENTINEL_URL ?? 'https://wa-gateway.corp.example.com';
-const API_KEY = process.env.SENTINEL_KEY; // never hard-code this
+const API_KEY = process.env.SENTINEL_KEY; // jangan pernah di-hard-code
 
 export async function sendOtp(to, code, reference) {
   const res = await fetch(`${GATEWAY}/api/v1/send-otp`, {
@@ -520,9 +524,9 @@ export async function sendOtp(to, code, reference) {
   const body = await res.json();
 
   if (!res.ok) {
-    // 429 → back off; 502 → Meta rejected it; 401/403 → your key is the problem
+    // 429 → mundur dulu; 502 → Meta menolak; 401/403 → masalah ada di key Anda
     const retryAfter = Number(res.headers.get('retry-after') ?? 0);
-    throw Object.assign(new Error(body.error?.message ?? 'send-otp failed'), {
+    throw Object.assign(new Error(body.error?.message ?? 'send-otp gagal'), {
       code: body.error?.code,
       status: res.status,
       requestId: body.request_id,
@@ -533,10 +537,10 @@ export async function sendOtp(to, code, reference) {
   return body; // { message_id, record_id, status, latency_ms, … }
 }
 
-// usage
+// contoh pemakaian
 const otp = String(Math.floor(100000 + Math.random() * 900000));
 const { message_id } = await sendOtp('+6281234567890', otp, 'payroll-login-8823');
-console.log('dispatched', message_id);
+console.log('terkirim', message_id);
 ```
 </details>
 
@@ -550,7 +554,7 @@ import random
 import requests
 
 GATEWAY = os.environ.get("SENTINEL_URL", "https://wa-gateway.corp.example.com")
-API_KEY = os.environ["SENTINEL_KEY"]          # never hard-code this
+API_KEY = os.environ["SENTINEL_KEY"]          # jangan pernah di-hard-code
 
 session = requests.Session()
 session.headers.update({
@@ -578,7 +582,7 @@ def send_otp(to: str, code: str, reference: str | None = None, timeout: int = 20
     if not res.ok:
         err = body.get("error", {})
         raise SentinelError(
-            err.get("message", "send-otp failed"),
+            err.get("message", "send-otp gagal"),
             code=err.get("code"),
             status=res.status_code,
             request_id=body.get("request_id"),
@@ -590,26 +594,26 @@ def send_otp(to: str, code: str, reference: str | None = None, timeout: int = 20
 if __name__ == "__main__":
     otp = f"{random.randint(0, 999999):06d}"
     result = send_otp("+6281234567890", otp, reference="payroll-login-8823")
-    print("dispatched", result["message_id"], f'in {result["latency_ms"]}ms')
+    print("terkirim", result["message_id"], f'dalam {result["latency_ms"]}ms')
 ```
 </details>
 
 ### 7.2 `POST /api/v1/send-message`
 
-Transactional or agent messages. Scope: `message.send`.
+Pesan transaksional atau balasan agent. Scope: `message.send`.
 
 ```bash
-# Free-form text — ONLY inside the 24h service window
+# Teks bebas — HANYA di dalam service window 24 jam
 curl -sS -X POST https://wa-gateway.corp.example.com/api/v1/send-message \
   -H "Content-Type: application/json" \
   -H "x-api-key: $SENTINEL_KEY" \
   -d '{
         "to": "+6281234567890",
-        "message": "Ticket INC-4821 has been resolved. Reply here if anything is still wrong.",
+        "message": "Tiket INC-4821 sudah selesai ditangani. Balas di sini kalau masih ada kendala.",
         "type": "text"
       }' | jq
 
-# Template — valid at any time
+# Template — berlaku kapan saja
 curl -sS -X POST https://wa-gateway.corp.example.com/api/v1/send-message \
   -H "Content-Type: application/json" \
   -H "x-api-key: $SENTINEL_KEY" \
@@ -629,7 +633,8 @@ curl -sS -X POST https://wa-gateway.corp.example.com/api/v1/send-message \
 
 ### 7.3 `GET /api/v1/status/{message_id}`
 
-Accepts either the Meta `wamid.…` or the `record_id` returned at dispatch. Scope: `status.read`.
+Menerima `wamid.…` dari Meta maupun `record_id` yang dikembalikan saat pengiriman.
+Scope: `status.read`.
 
 ```bash
 curl -sS -H "x-api-key: $SENTINEL_KEY" \
@@ -657,8 +662,8 @@ curl -sS -H "x-api-key: $SENTINEL_KEY" \
 
 ### 7.4 `GET /api/v1/health`
 
-Returns `200` when healthy and **`503`** when a subsystem is down — so a load balancer or uptime
-monitor can act on the status code alone. Scope: `health.read`.
+Mengembalikan `200` saat sehat dan **`503`** saat ada subsistem yang bermasalah — sehingga load
+balancer atau uptime monitor bisa bertindak hanya berdasarkan status code. Scope: `health.read`.
 
 ```bash
 curl -sS -H "x-api-key: $SENTINEL_KEY" \
@@ -678,9 +683,9 @@ curl -sS -H "x-api-key: $SENTINEL_KEY" \
 }
 ```
 
-### 7.5 Error contract
+### 7.5 Kontrak error
 
-Every failure returns the same envelope:
+Setiap kegagalan mengembalikan amplop yang sama:
 
 ```json
 {
@@ -690,220 +695,224 @@ Every failure returns the same envelope:
 }
 ```
 
-| HTTP | `error.code` | What to do |
+| HTTP | `error.code` | Yang harus dilakukan |
 |---|---|---|
-| 400 | `VALIDATION_ERROR` | Fix the payload — `error.details` names the offending fields. |
-| 401 | `UNAUTHORIZED` | Missing or unknown `x-api-key`. |
-| 403 | `KEY_REVOKED` / `IP_NOT_ALLOWED` / `FORBIDDEN_SCOPE` | Operator action needed in `/api-keys`. |
-| 404 | `NOT_FOUND` | No message with that identifier. |
-| 428 | `NOT_CONFIGURED` | Meta credentials are not set. Visit `/settings`. |
-| 429 | `RATE_LIMITED` | Honour `Retry-After`; do not hot-loop. |
-| 502 | `META_ERROR` | Meta rejected it — `error.details` carries their code. Usually a template or window problem. |
-| 503 | `CIRCUIT_OPEN` | Meta is failing; the breaker is shielding you. Retry after the window. |
+| 400 | `VALIDATION_ERROR` | Perbaiki payload — `error.details` menyebut field mana yang bermasalah. |
+| 401 | `UNAUTHORIZED` | `x-api-key` tidak ada atau tidak dikenal. |
+| 403 | `KEY_REVOKED` / `IP_NOT_ALLOWED` / `FORBIDDEN_SCOPE` | Perlu tindakan operator di `/api-keys`. |
+| 404 | `NOT_FOUND` | Tidak ada pesan dengan identifier tersebut. |
+| 428 | `NOT_CONFIGURED` | Kredensial Meta belum diisi. Buka `/settings`. |
+| 429 | `RATE_LIMITED` | Hormati `Retry-After`; jangan looping tanpa jeda. |
+| 502 | `META_ERROR` | Meta menolak — `error.details` membawa kode dari mereka. Biasanya masalah template atau service window. |
+| 503 | `CIRCUIT_OPEN` | Meta sedang bermasalah; circuit breaker melindungi Anda. Coba lagi setelah jedanya lewat. |
 
-**Quote `request_id` when reporting a problem** — it appears verbatim in the log console and makes
-the incident findable in one search.
+**Sertakan `request_id` saat melaporkan masalah** — nilainya muncul apa adanya di konsol log,
+sehingga insidennya bisa ditemukan dengan satu kali pencarian.
 
 ---
 
-## 8. The operations console
+## 8. Konsol operasi
 
-| Route | What it is for |
+| Route | Kegunaannya |
 |---|---|
-| **`/`** | Health matrix (runtime, Meta gateway, webhook, database), runtime gauges, throughput / latency / message-flow / delivery charts, top consumers, live log console, message tap |
-| **`/chat`** | Three-pane agent inbox: triage list with unread markers, conversation, inspector with a live 24h service-window countdown. Macros expand from `/shortcut` or `Ctrl`+`K`. |
-| **`/api-keys`** | Issue, scope, throttle, IP-restrict, revoke and reinstate credentials |
-| **`/settings`** | Meta credentials, callback URL generator, API version, simulation mode, handshake test |
-| **`/docs`** | Swagger UI against the live gateway |
+| **`/`** | Matriks kesehatan (runtime, gateway Meta, webhook, database), gauge runtime, grafik throughput / latency / arus pesan / delivery, konsumen teratas, konsol log live, message tap |
+| **`/chat`** | Inbox agent tiga panel: daftar triase dengan penanda belum dibaca, percakapan, dan panel inspector dengan hitung mundur service window 24 jam. Macro dipanggil dengan `/shortcut` atau `Ctrl`+`K`. |
+| **`/api-keys`** | Menerbitkan, mengatur scope, membatasi rate, membatasi IP, mencabut, dan mengaktifkan kembali kredensial |
+| **`/settings`** | Kredensial Meta, generator callback URL, versi API, mode simulasi, tes handshake |
+| **`/docs`** | Swagger UI yang menembak gateway langsung |
 
-**The log console** filters by severity and free text, pauses without losing frames (held lines are
-flushed on resume), clears the on-screen buffer without touching the database, and exports the
-filtered set as JSON or CSV. Auto-scroll follows the tail only while you are already at the bottom —
-scrolling up to read a stack trace detaches it, and *jump to tail* reattaches.
+**Konsol log** bisa difilter per tingkat keparahan dan teks bebas, bisa di-pause tanpa kehilangan
+frame (baris yang tertahan dikeluarkan saat resume), bisa dibersihkan tanpa menyentuh database, dan
+bisa diekspor sebagai JSON atau CSV sesuai filter yang aktif. Auto-scroll hanya mengikuti ekor log
+selama Anda memang sedang berada di bagian bawah — menggulir ke atas untuk membaca stack trace akan
+melepasnya, dan tombol *jump to tail* menyambungkannya kembali.
 
-**Simulation mode** (`/settings`, or `MOCK_META=true`) acknowledges every dispatch locally with a
-synthetic `wamid` and sends no packet to Meta. Use it for drills, demos and offline development.
+**Mode simulasi** (`/settings`, atau `MOCK_META=true`) mengakui setiap pengiriman secara lokal
+dengan `wamid` sintetis dan tidak mengirim paket apa pun ke Meta. Cocok untuk latihan, demo, dan
+pengembangan offline.
 
-**Colour is never the only signal.** Every state is labelled, delivery segments are directly
-labelled beside the ring, and the chart series palette is validated for colour-vision deficiency
-against the dark surface.
+**Warna tidak pernah menjadi satu-satunya penanda.** Setiap status diberi label teks, tiap segmen
+delivery diberi label langsung di sebelah ring, dan palet seri grafik sudah divalidasi untuk
+gangguan penglihatan warna terhadap latar gelap yang dipakai.
 
 ---
 
-## 9. Environment reference
+## 9. Referensi environment
 
-| Variable | Default | Purpose |
+| Variabel | Default | Kegunaan |
 |---|---|---|
-| `NODE_ENV` | `development` | `production` enables the secret assertions. |
-| `PORT` | `3000` | Node listen port. |
-| `APP_PUBLIC_URL` | — | Public HTTPS origin; used to build the callback URL and the OpenAPI server entry. |
-| `DATABASE_URL` | `file:./sentinelwa.db` | SQLite path, resolved relative to `prisma/`. |
-| `ENCRYPTION_KEY` | — | **Required in production.** 32 bytes, hex or base64. Encrypts stored Meta credentials. Not rotatable in place. |
-| `SESSION_SECRET` | — | **Required in production.** Signs the operator session cookie. |
-| `CONSOLE_PASSWORD` | — | Gates the console. Blank disables the login entirely. |
-| `META_API_VERSION` | `v21.0` | Graph API version. |
-| `META_ACCESS_TOKEN` | — | System user permanent token. |
-| `META_PHONE_NUMBER_ID` | — | Sending number. |
-| `META_WABA_ID` | — | Business account, used for the handshake report. |
-| `META_APP_SECRET` | — | Validates `x-hub-signature-256`. |
-| `META_WEBHOOK_VERIFY_TOKEN` | — | Must match the App Dashboard field exactly. |
-| `META_OTP_TEMPLATE_NAME` | `otp_verification` | Default authentication template. |
-| `META_OTP_TEMPLATE_LANG` | `en_US` | Default template language. |
-| `MOCK_META` | `false` | Simulate dispatches with no outbound traffic. |
-| `DEFAULT_RATE_LIMIT_PER_MIN` | `120` | Applied to a newly created key. |
-| `GLOBAL_IP_WHITELIST` | *(empty)* | Gateway-wide allowlist, checked before per-key rules. Read from the environment at request time. |
-| `LOG_RETENTION_DAYS` | `14` | Age at which `pruneOldRecords()` trims logs, metrics and webhook envelopes. |
-| `LOG_MIN_LEVEL` | `INFO` | Minimum severity persisted to SQLite. Lower lines still stream live. |
-| `BREAKER_FAILURE_THRESHOLD` | `5` | Consecutive Meta failures before the breaker opens. |
-| `BREAKER_RESET_MS` | `30000` | Time the breaker stays open before a half-open probe. |
+| `NODE_ENV` | `development` | `production` mengaktifkan pemeriksaan wajib untuk secret. |
+| `PORT` | `3000` | Port yang didengarkan Node. |
+| `APP_PUBLIC_URL` | — | Origin HTTPS publik; dipakai untuk membentuk callback URL dan entri server di OpenAPI. |
+| `DATABASE_URL` | `file:./sentinelwa.db` | Path SQLite, relatif terhadap direktori `prisma/`. |
+| `ENCRYPTION_KEY` | — | **Wajib di production.** 32 byte, hex atau base64. Mengenkripsi kredensial Meta yang tersimpan. Tidak bisa dirotasi di tempat. |
+| `SESSION_SECRET` | — | **Wajib di production.** Menandatangani cookie sesi operator. |
+| `CONSOLE_PASSWORD` | — | Mengunci konsol. Dikosongkan berarti login dimatikan sepenuhnya. |
+| `META_API_VERSION` | `v21.0` | Versi Graph API. |
+| `META_ACCESS_TOKEN` | — | Permanent token milik system user. |
+| `META_PHONE_NUMBER_ID` | — | Nomor pengirim. |
+| `META_WABA_ID` | — | Business account, dipakai untuk laporan handshake. |
+| `META_APP_SECRET` | — | Memvalidasi `x-hub-signature-256`. |
+| `META_WEBHOOK_VERIFY_TOKEN` | — | Harus persis sama dengan kolom di App Dashboard. |
+| `META_OTP_TEMPLATE_NAME` | `otp_verification` | Template autentikasi default. |
+| `META_OTP_TEMPLATE_LANG` | `en_US` | Bahasa template default. |
+| `MOCK_META` | `false` | Menyimulasikan pengiriman tanpa trafik keluar. |
+| `DEFAULT_RATE_LIMIT_PER_MIN` | `120` | Diterapkan pada key yang baru dibuat. |
+| `GLOBAL_IP_WHITELIST` | *(kosong)* | Allowlist tingkat gateway, diperiksa sebelum aturan per key. Dibaca dari environment saat request datang. |
+| `LOG_RETENTION_DAYS` | `14` | Umur data saat `pruneOldRecords()` memangkas log, metrik, dan amplop webhook. |
+| `LOG_MIN_LEVEL` | `INFO` | Tingkat keparahan minimum yang disimpan ke SQLite. Baris di bawahnya tetap dialirkan secara live. |
+| `BREAKER_FAILURE_THRESHOLD` | `5` | Jumlah kegagalan Meta berturut-turut sebelum circuit breaker terbuka. |
+| `BREAKER_RESET_MS` | `30000` | Lama circuit breaker terbuka sebelum probe half-open. |
 
-Values entered in `/settings` are stored encrypted in SQLite and **take precedence** over `.env`.
-`.env` is the bootstrap; the console is the runtime.
-
----
-
-## 10. Security model
-
-**Credentials at rest.** API keys are stored as `SHA-256(key)` — the plaintext exists only in the
-response that created it. Meta credentials are AES-256-GCM encrypted with `ENCRYPTION_KEY` before
-they reach SQLite.
-
-**Gateway authorisation**, in order, cheapest first so a prober learns as little as possible:
-① key present → ② hash lookup → ③ revocation → ④ global then per-key IP allowlist →
-⑤ scope → ⑥ per-key token bucket.
-
-**Webhook authentication is the signature.** `POST /api/webhook` takes no API key; it verifies
-`x-hub-signature-256` as an HMAC-SHA256 of the raw body against the app secret, compared in constant
-time. Every envelope is persisted — including rejected ones — so a signature failure is
-investigable rather than merely logged.
-
-**Console sessions** are HMAC-signed expiry stamps in an `httpOnly`, `sameSite=lax` cookie, `secure`
-in production, 12-hour lifetime, with no server-side session store. Login attempts are throttled to
-10/minute per source address.
-
-**Hardening headers** — `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` and a
-restrictive `Permissions-Policy` — are applied by the edge middleware on every response.
-
-**Recommended posture**
-
-- Give each consuming application its own key, with the narrowest scopes it needs. Revoking one must
-  never take the others down.
-- Set per-key IP allowlists. An office service has a predictable source address.
-- Expose only `/api/webhook` to the internet; keep `/api/v1/*` and the console on the LAN.
-- Rotate keys on a schedule — revoke leaves the audit trail intact, purge does not.
-- Watch for `CRITICAL auth` lines. Blocked source addresses and invalid signatures both log there.
+Nilai yang dimasukkan lewat `/settings` disimpan terenkripsi di SQLite dan **mengalahkan** `.env`.
+`.env` adalah bootstrap-nya; konsol adalah runtime-nya.
 
 ---
 
-## 11. Operations & troubleshooting
+## 10. Model keamanan
 
-### Backups
+**Kredensial saat disimpan.** API key disimpan sebagai `SHA-256(key)` — nilai plaintext hanya ada
+di response yang membuatnya. Kredensial Meta dienkripsi AES-256-GCM dengan `ENCRYPTION_KEY` sebelum
+menyentuh SQLite.
 
-The whole datastore is one file plus its WAL sidecars. Back it up **without stopping the app**:
+**Otorisasi gateway**, berurutan dari yang paling murah, supaya penyerang yang menyondek belajar
+sesedikit mungkin: ① key ada → ② lookup hash → ③ status pencabutan → ④ allowlist IP global lalu per
+key → ⑤ scope → ⑥ token bucket per key.
+
+**Autentikasi webhook adalah signature-nya.** `POST /api/webhook` tidak memakai API key; ia
+memverifikasi `x-hub-signature-256` sebagai HMAC-SHA256 dari raw body terhadap app secret, dengan
+perbandingan constant-time. Setiap amplop disimpan — termasuk yang ditolak — sehingga kegagalan
+signature bisa ditelusuri, bukan sekadar tercatat.
+
+**Sesi konsol** berupa stempel kedaluwarsa yang ditandatangani HMAC di dalam cookie `httpOnly`,
+`sameSite=lax`, `secure` di production, berumur 12 jam, tanpa session store di server. Percobaan
+login dibatasi 10 per menit per alamat sumber.
+
+**Header hardening** — `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, dan
+`Permissions-Policy` yang ketat — dipasang oleh edge middleware di setiap response.
+
+**Postur yang disarankan**
+
+- Beri setiap aplikasi konsumen key-nya sendiri, dengan scope sesempit yang dibutuhkan. Mencabut
+  satu key tidak boleh menjatuhkan yang lain.
+- Pasang allowlist IP per key. Layanan kantor punya alamat sumber yang bisa diprediksi.
+- Ekspos hanya `/api/webhook` ke internet; simpan `/api/v1/*` dan konsol di LAN.
+- Rotasi key secara berkala — *revoke* mempertahankan jejak audit, *purge* tidak.
+- Perhatikan baris `CRITICAL auth`. Alamat sumber yang diblokir dan signature yang tidak valid
+  sama-sama tercatat di sana.
+
+---
+
+## 11. Operasional & troubleshooting
+
+### Backup
+
+Seluruh datastore hanya satu file plus file WAL pendampingnya. Backup **tanpa menghentikan
+aplikasi**:
 
 ```bash
 sqlite3 prisma/sentinelwa.db ".backup '/backup/sentinelwa-$(date +%F).db'"
 ```
 
 ```bash
-# nightly at 02:30
+# tiap malam pukul 02:30
 30 2 * * * sqlite3 /opt/sentinelwa/prisma/sentinelwa.db \
   ".backup '/backup/sentinelwa-$(date +\%F).db'" && \
   find /backup -name 'sentinelwa-*.db' -mtime +30 -delete
 ```
 
-Back up `.env` separately and just as carefully — without `ENCRYPTION_KEY` the credentials in that
-database are unreadable.
+Backup `.env` secara terpisah dan sama hati-hatinya — tanpa `ENCRYPTION_KEY`, kredensial di dalam
+database itu tidak terbaca.
 
-### Retention
+### Retensi data
 
-`pruneOldRecords()` trims `LogEntry`, `RequestMetric` and `WebhookEvent` older than
-`LOG_RETENTION_DAYS`. Call it from a cron job or a scheduled task:
+`pruneOldRecords()` memangkas `LogEntry`, `RequestMetric`, dan `WebhookEvent` yang lebih tua dari
+`LOG_RETENTION_DAYS`. Panggil dari cron job atau scheduled task:
 
 ```bash
 0 3 * * * cd /opt/sentinelwa && npx tsx -e "import('./src/lib/logger').then(m => m.pruneOldRecords().then(console.log))"
 ```
 
-### Symptom index
+### Indeks gejala
 
-| Symptom | Likely cause | Fix |
+| Gejala | Kemungkinan penyebab | Solusi |
 |---|---|---|
-| Dashboard shows `sse error` | Nginx is buffering or timing out the stream | Confirm `proxy_buffering off` and a long `proxy_read_timeout` on `/api/stream` |
-| Dashboard updates in bursts, then a flood | Same | Same |
-| Every send returns `428 NOT_CONFIGURED` | Meta credentials absent | Fill in `/settings`, then run the handshake |
-| Every send returns `503 CIRCUIT_OPEN` | 5 consecutive Meta failures opened the breaker | Fix the underlying error, then a successful handshake in `/settings` resets it |
-| `502 META_ERROR` mentioning a template | Template not approved, wrong name, or wrong language code | Check the template in the Meta dashboard; language must match exactly (`en_US`, not `en`) |
-| Free-form text rejected, templates work | The 24-hour service window has closed | Use an approved template — the inbox shows the countdown per contact |
-| `CRITICAL webhook Rejected payload with invalid signature` | Wrong app secret | Re-copy it from App Dashboard → Settings → Basic |
-| Webhook verification fails at Meta | Verify token mismatch, or the URL is not publicly reachable | Test with `curl` from outside your network |
-| `@prisma/client did not initialize yet` | `prisma generate` never ran | `npx prisma generate` |
-| `PrismaClientInitializationError` at start | `DATABASE_URL` path is wrong or unwritable | Check the path and that the process owns `prisma/` |
-| Console redirects to `/login` forever | `SESSION_SECRET` changed, invalidating issued cookies | Clear the cookie and log in again |
-| Rate limits look doubled | PM2 running in cluster mode | Set `instances: 1`, `exec_mode: 'fork'` |
-| Fonts look wrong | JetBrains Mono / Fira Code not installed on the client | Install one, or accept the system monospace fallback |
+| Dashboard menampilkan `sse error` | Nginx melakukan buffering atau memutus stream | Pastikan `proxy_buffering off` dan `proxy_read_timeout` panjang di `/api/stream` |
+| Dashboard update tersendat lalu tumpah sekaligus | Sama | Sama |
+| Semua pengiriman menghasilkan `428 NOT_CONFIGURED` | Kredensial Meta belum ada | Isi di `/settings`, lalu jalankan handshake |
+| Semua pengiriman menghasilkan `503 CIRCUIT_OPEN` | 5 kegagalan Meta berturut-turut membuka circuit breaker | Perbaiki penyebabnya, lalu handshake yang sukses di `/settings` akan me-reset-nya |
+| `502 META_ERROR` menyebut template | Template belum disetujui, nama salah, atau kode bahasa salah | Cek template di dashboard Meta; bahasa harus persis (`en_US`, bukan `en`) |
+| Teks bebas ditolak tapi template berhasil | Service window 24 jam sudah tertutup | Pakai template yang disetujui — inbox menampilkan hitung mundur per kontak |
+| `CRITICAL webhook Rejected payload with invalid signature` | App secret salah | Salin ulang dari App Dashboard → Settings → Basic |
+| Verifikasi webhook gagal di Meta | Verify token tidak cocok, atau URL tidak bisa diakses publik | Uji dengan `curl` dari luar jaringan Anda |
+| `@prisma/client did not initialize yet` | `prisma generate` belum pernah dijalankan | `npx prisma generate` |
+| `PrismaClientInitializationError` saat start | Path `DATABASE_URL` salah atau tidak bisa ditulis | Cek path dan pastikan proses memiliki akses tulis ke `prisma/` |
+| Konsol terus mengalihkan ke `/login` | `SESSION_SECRET` berubah sehingga cookie lama tidak berlaku | Hapus cookie dan login ulang |
+| Rate limit terasa berlipat | PM2 berjalan di cluster mode | Set `instances: 1`, `exec_mode: 'fork'` |
+| Font terlihat tidak sesuai | JetBrains Mono / Fira Code belum terpasang di komputer klien | Pasang salah satunya, atau terima fallback monospace bawaan sistem |
 
-### Reading the log console
+### Membaca konsol log
 
 ```
 18:49:03.491  WARN      auth      Missing x-api-key on GET /api/v1/health          meta
               ▲         ▲         ▲                                                ▲
-              severity  channel   message                                    click for JSON context
+              severity  channel   pesan                                    klik untuk konteks JSON
 ```
 
-Channels: `system` · `api` · `meta` · `webhook` · `db` · `auth` · `console`.
+Channel: `system` · `api` · `meta` · `webhook` · `db` · `auth` · `console`.
 
 ---
 
-## 12. Project layout
+## 12. Struktur proyek
 
 ```
 SentinelWA/
 ├── prisma/
-│   ├── schema.prisma              # 8 models: keys, settings, contacts, messages,
-│   │                              # logs, webhook envelopes, request metrics, macros
-│   └── migrations/                # committed SQL — `migrate deploy` applies these
+│   ├── schema.prisma              # 8 model: key, setting, kontak, pesan,
+│   │                              # log, amplop webhook, metrik request, macro
+│   └── migrations/                # SQL yang di-commit — diterapkan oleh `migrate deploy`
 ├── scripts/
-│   └── create-api-key.ts          # headless credential bootstrap
+│   └── create-api-key.ts          # bootstrap kredensial tanpa UI
 ├── deploy/
-│   └── nginx.conf                 # commented reverse-proxy config with SSE settings
-├── ecosystem.config.js            # PM2 process definition (single instance, on purpose)
+│   └── nginx.conf                 # konfigurasi reverse proxy dengan pengaturan SSE
+├── ecosystem.config.js            # definisi proses PM2 (satu instance, disengaja)
 ├── src/
-│   ├── middleware.ts              # edge: request id, hardening headers, console gate
+│   ├── middleware.ts              # edge: request id, header hardening, gerbang konsol
 │   ├── app/
-│   │   ├── page.tsx               # SOC dashboard
+│   │   ├── page.tsx               # dashboard SOC
 │   │   ├── chat/                  # CS command center
-│   │   ├── api-keys/              # credential manager
-│   │   ├── settings/              # Meta uplink
+│   │   ├── api-keys/              # manajemen kredensial
+│   │   ├── settings/              # uplink Meta
 │   │   ├── docs/                  # Swagger UI
 │   │   ├── login/
 │   │   └── api/
 │   │       ├── v1/                # send-otp · send-message · status/[id] · health
-│   │       ├── webhook/           # GET verification · POST receiver
-│   │       ├── stream/            # SSE fan-out
-│   │       ├── openapi/           # generated OpenAPI 3.0 document
-│   │       └── console/           # operator-only endpoints
+│   │       ├── webhook/           # GET verifikasi · POST penerima
+│   │       ├── stream/            # fan-out SSE
+│   │       ├── openapi/           # dokumen OpenAPI 3.0 yang dihasilkan
+│   │       └── console/           # endpoint khusus operator
 │   ├── components/
-│   │   ├── StreamProvider.tsx     # one EventSource shared by every panel
+│   │   ├── StreamProvider.tsx     # satu EventSource dipakai bersama semua panel
 │   │   ├── shell/                 # sidebar · top bar · app shell
-│   │   ├── dashboard/             # health matrix · gauges · charts · terminal
-│   │   ├── chat/                  # three-pane inbox
+│   │   ├── dashboard/             # matriks kesehatan · gauge · grafik · terminal
+│   │   ├── chat/                  # inbox tiga panel
 │   │   ├── keys/  settings/
 │   └── lib/
-│       ├── api-auth.ts            # the gateway middleware (key, scope, IP, rate limit)
-│       ├── meta.ts                # Graph API client, handshake, ping
+│       ├── api-auth.ts            # middleware gateway (key, scope, IP, rate limit)
+│       ├── meta.ts                # klien Graph API, handshake, ping
 │       ├── circuit-breaker.ts     # closed → open → half-open
-│       ├── messaging.ts           # message lifecycle + webhook ingestion
-│       ├── telemetry.ts           # health snapshot + chart aggregation
-│       ├── bus.ts                 # in-process event bus behind SSE
-│       ├── crypto.ts              # AES-256-GCM, key hashing, signature validation
+│       ├── messaging.ts           # siklus hidup pesan + ingesti webhook
+│       ├── telemetry.ts           # snapshot kesehatan + agregasi grafik
+│       ├── bus.ts                 # event bus in-process di balik SSE
+│       ├── crypto.ts              # AES-256-GCM, hashing key, validasi signature
 │       ├── rate-limit.ts          # token bucket
-│       ├── settings.ts            # encrypted runtime configuration
-│       └── theme.ts               # validated chart + status palette
+│       ├── settings.ts            # konfigurasi runtime terenkripsi
+│       └── theme.ts               # palet grafik & status yang sudah divalidasi
 └── .env.example
 ```
 
 ---
 
 <div align="center">
-<sub>SentinelWA · internal use · every credential in this document is a placeholder</sub>
+<sub>SentinelWA · penggunaan internal · semua kredensial dalam dokumen ini hanyalah contoh</sub>
 </div>
