@@ -1,0 +1,256 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --bg-void: #0a0a0f;
+    --bg-panel: #0d1117;
+    --neon: #00ff9d;
+    --cyan: #00e5ff;
+    --warn: #ffb020;
+    --crit: #ff3b5c;
+  }
+
+  * {
+    border-color: rgba(0, 229, 255, 0.12);
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-void-800 font-mono text-[13px] leading-relaxed text-[#c7d5e0] antialiased;
+    background-image:
+      radial-gradient(ellipse 120% 80% at 50% -20%, rgba(0, 255, 157, 0.07), transparent 60%),
+      linear-gradient(rgba(0, 229, 255, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 229, 255, 0.035) 1px, transparent 1px);
+    background-size: 100% 100%, 32px 32px, 32px 32px;
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: rgba(0, 255, 157, 0.28);
+    color: #eafff6;
+  }
+
+  ::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  ::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.02);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 229, 255, 0.22);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 255, 157, 0.4);
+  }
+
+  input,
+  textarea,
+  select {
+    @apply bg-void-700;
+  }
+
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  button:focus-visible {
+    outline: 1px solid rgba(0, 255, 157, 0.6);
+    outline-offset: 1px;
+  }
+}
+
+@layer components {
+  /* Frosted SOC panel with a hairline neon edge. */
+  .panel {
+    @apply relative rounded-md border border-edge bg-void-700/70 shadow-panel backdrop-blur-[2px];
+  }
+
+  .panel-head {
+    @apply flex items-center justify-between gap-3 border-b border-edge/70 px-3 py-2;
+  }
+
+  .panel-title {
+    @apply flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground;
+  }
+
+  /* Corner ticks — the "targeting reticle" flourish on key panels. */
+  .reticle::before,
+  .reticle::after {
+    content: '';
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-color: rgba(0, 255, 157, 0.5);
+    pointer-events: none;
+  }
+  .reticle::before {
+    top: -1px;
+    left: -1px;
+    border-top-width: 1px;
+    border-left-width: 1px;
+  }
+  .reticle::after {
+    bottom: -1px;
+    right: -1px;
+    border-bottom-width: 1px;
+    border-right-width: 1px;
+  }
+
+  .scanlines::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0, 255, 157, 0.035) 0px,
+      rgba(0, 255, 157, 0.035) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    mix-blend-mode: overlay;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em];
+  }
+
+  .chip-ok {
+    @apply border-neon/40 bg-neon/10 text-neon;
+  }
+  .chip-warn {
+    @apply border-warn/40 bg-warn/10 text-warn;
+  }
+  .chip-crit {
+    @apply border-crit/40 bg-crit/10 text-crit;
+  }
+  .chip-idle {
+    @apply border-muted/30 bg-white/[0.03] text-muted-foreground;
+  }
+  .chip-info {
+    @apply border-neon-cyan/40 bg-neon-cyan/10 text-neon-cyan;
+  }
+
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-sm border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] transition-colors disabled:pointer-events-none disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply border-neon/50 bg-neon/10 text-neon hover:bg-neon/20;
+  }
+  .btn-ghost {
+    @apply border-edge bg-white/[0.02] text-muted-foreground hover:border-neon-cyan/40 hover:text-neon-cyan;
+  }
+  .btn-danger {
+    @apply border-crit/50 bg-crit/10 text-crit hover:bg-crit/20;
+  }
+
+  .field {
+    @apply w-full rounded-sm border border-edge bg-void-800/80 px-2.5 py-1.5 font-mono text-[12px] text-[#d7e6f0] placeholder:text-muted/60;
+  }
+
+  .label {
+    @apply mb-1 block text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground;
+  }
+
+  .stat-value {
+    @apply font-mono text-2xl font-semibold tabular-nums tracking-tight text-[#e6f6ff];
+  }
+
+  .hairline {
+    @apply h-px w-full bg-gradient-to-r from-transparent via-edge to-transparent;
+  }
+
+  .glow-text {
+    text-shadow: 0 0 8px currentColor;
+  }
+}
+
+@layer utilities {
+  .text-2xs {
+    font-size: 10px;
+    line-height: 14px;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* ── Swagger UI: repaint the light default into the SOC theme ─────────────── */
+.swagger-soc .swagger-ui,
+.swagger-soc .swagger-ui .info .title,
+.swagger-soc .swagger-ui .opblock-tag,
+.swagger-soc .swagger-ui .opblock .opblock-summary-operation-id,
+.swagger-soc .swagger-ui .opblock .opblock-summary-path,
+.swagger-soc .swagger-ui .opblock .opblock-summary-description,
+.swagger-soc .swagger-ui label,
+.swagger-soc .swagger-ui .parameter__name,
+.swagger-soc .swagger-ui .parameter__type,
+.swagger-soc .swagger-ui table thead tr th,
+.swagger-soc .swagger-ui .response-col_status,
+.swagger-soc .swagger-ui .tab li,
+.swagger-soc .swagger-ui .markdown p,
+.swagger-soc .swagger-ui .renderedMarkdown p,
+.swagger-soc .swagger-ui h4,
+.swagger-soc .swagger-ui h5 {
+  color: #c7d5e0 !important;
+  font-family: var(--font-mono), 'JetBrains Mono', monospace !important;
+}
+
+.swagger-soc .swagger-ui .info .title small.version-stamp {
+  background: rgba(0, 255, 157, 0.15);
+}
+
+.swagger-soc .swagger-ui .scheme-container,
+.swagger-soc .swagger-ui section.models,
+.swagger-soc .swagger-ui .opblock .opblock-section-header {
+  background: #0d1117 !important;
+  box-shadow: none !important;
+  border: 1px solid rgba(0, 229, 255, 0.16) !important;
+}
+
+.swagger-soc .swagger-ui .opblock {
+  background: rgba(13, 17, 23, 0.75) !important;
+  border: 1px solid rgba(0, 229, 255, 0.16) !important;
+  box-shadow: none !important;
+}
+
+.swagger-soc .swagger-ui .opblock.opblock-post {
+  border-color: rgba(0, 255, 157, 0.35) !important;
+}
+.swagger-soc .swagger-ui .opblock.opblock-get {
+  border-color: rgba(0, 229, 255, 0.35) !important;
+}
+
+.swagger-soc .swagger-ui .btn {
+  color: #00ff9d !important;
+  border-color: rgba(0, 255, 157, 0.4) !important;
+  background: rgba(0, 255, 157, 0.08) !important;
+}
+
+.swagger-soc .swagger-ui select,
+.swagger-soc .swagger-ui input[type='text'],
+.swagger-soc .swagger-ui textarea {
+  background: #0a0a0f !important;
+  color: #d7e6f0 !important;
+  border: 1px solid rgba(0, 229, 255, 0.2) !important;
+}
+
+.swagger-soc .swagger-ui .microlight {
+  background: #07070b !important;
+}
+
+.swagger-soc .swagger-ui svg:not(:root) {
+  fill: #8ba0b6;
+}

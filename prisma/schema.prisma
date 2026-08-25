@@ -1,0 +1,170 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  SentinelWA :: data model
+//  SQLite keeps the whole gateway self-contained — no external DB service is
+//  required for an on-premise deployment.
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Bearer credential handed to an internal office application.
+/// The plaintext key is shown exactly once, at creation time; only a SHA-256
+/// hash is persisted.
+model ApiKey {
+  id              String    @id @default(cuid())
+  name            String
+  description     String?
+  /// Human-recognisable prefix, e.g. "swa_live_9f2a" — safe to display.
+  keyPrefix       String
+  /// SHA-256 hex digest of the full key.
+  keyHash         String    @unique
+  /// Comma-separated scopes: otp.send, message.send, status.read, health.read
+  scopes          String    @default("otp.send,message.send,status.read,health.read")
+  rateLimitPerMin Int       @default(120)
+  /// Comma-separated IPv4/IPv6 addresses or CIDR blocks. Empty = any source.
+  ipWhitelist     String    @default("")
+  active          Boolean   @default(true)
+  requestCount    Int       @default(0)
+  lastUsedAt      DateTime?
+  lastUsedIp      String?
+  createdAt       DateTime  @default(now())
+  revokedAt       DateTime?
+
+  messages Message[]
+  metrics  RequestMetric[]
+
+  @@index([active])
+}
+
+/// Runtime configuration edited from /settings. Secret values are stored
+/// AES-256-GCM encrypted using ENCRYPTION_KEY.
+model Setting {
+  key       String   @id
+  value     String
+  encrypted Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+}
+
+/// A WhatsApp end user the gateway has exchanged messages with.
+model Contact {
+  id             String    @id @default(cuid())
+  /// WhatsApp ID — the E.164 number without '+', as Meta reports it.
+  waId           String    @unique
+  displayName    String?
+  profileName    String?
+  optIn          Boolean   @default(false)
+  blocked        Boolean   @default(false)
+  note           String?
+  lastInboundAt  DateTime?
+  lastOutboundAt DateTime?
+  unreadCount    Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  messages Message[]
+
+  @@index([lastInboundAt])
+}
+
+/// Every inbound and outbound message the gateway has handled.
+model Message {
+  id           String    @id @default(cuid())
+  /// Meta message id (wamid.…) — absent until Meta accepts the send.
+  wamid        String?   @unique
+  waId         String
+  direction    String    @default("outbound") // inbound | outbound
+  channel      String    @default("text") // text | template | image | audio | document | video | sticker | location | unsupported
+  body         String    @default("")
+  templateName String?
+  templateLang String?
+  /// JSON blob: template components, media metadata, raw context.
+  payload      String?
+  status       String    @default("queued") // queued | sent | delivered | read | failed | received
+  errorCode    String?
+  errorMessage String?
+  /// api | console | webhook
+  source       String    @default("api")
+  conversationId String?
+  pricingCategory String?
+  sentAt       DateTime?
+  deliveredAt  DateTime?
+  readAt       DateTime?
+  failedAt     DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  apiKeyId  String?
+  apiKey    ApiKey?  @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+
+  @@index([waId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([contactId, createdAt])
+}
+
+/// Structured log line. Also streamed live to the dashboard over SSE.
+model LogEntry {
+  id        String   @id @default(cuid())
+  level     String   @default("INFO") // DEBUG | INFO | WARN | CRITICAL
+  channel   String   @default("system") // system | api | meta | webhook | db | auth | console
+  message   String
+  /// JSON blob with request id, latency, status code, etc.
+  meta      String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([level])
+  @@index([channel])
+}
+
+/// Raw webhook envelope received from Meta, kept for forensic replay.
+model WebhookEvent {
+  id             String   @id @default(cuid())
+  eventType      String   @default("unknown") // message | status | template_status | unknown
+  signatureValid Boolean  @default(false)
+  sourceIp       String?
+  payload        String
+  processedAt    DateTime?
+  error          String?
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+/// One row per inbound HTTP request against /api/*, used for the RPS and
+/// latency telemetry on the dashboard.
+model RequestMetric {
+  id         String   @id @default(cuid())
+  path       String
+  method     String
+  statusCode Int
+  durationMs Int
+  sourceIp   String?
+  outcome    String   @default("ok") // ok | auth_failed | rate_limited | error
+  createdAt  DateTime @default(now())
+
+  apiKeyId String?
+  apiKey   ApiKey? @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([path])
+}
+
+/// Canned reply used by agents in the CS command center.
+model CannedResponse {
+  id        String   @id @default(cuid())
+  shortcut  String   @unique
+  title     String
+  body      String
+  useCount  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
